@@ -43,6 +43,13 @@ MODEL_NAME: str = os.getenv("MODEL_NAME", "").strip() or DEFAULT_MODEL_NAME
 MIN_AGENTS: int = 1  # the planner must always create at least 1 worker
 MAX_AGENTS: int = 6  # the planner may never create more than 6 workers
 
+# --- Planner ----------------------------------------------------------------
+# The most text (measured in "tokens", roughly word pieces) the planner may
+# write, including its private thinking. A plan is short, so this is plenty.
+PLANNER_MAX_TOKENS: int = 8000
+# If the planner takes longer than this, we stop waiting and report an error.
+PLANNER_TIMEOUT_SECONDS: int = 120
+
 # --- Safety -----------------------------------------------------------------
 # If one worker takes longer than this, we stop waiting and record an error.
 WORKER_TIMEOUT_SECONDS: int = 60

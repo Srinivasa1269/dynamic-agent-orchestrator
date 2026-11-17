@@ -13,3 +13,19 @@ python -m venv .venv
 copy .env.example .env   # then paste your Anthropic key into .env
 .venv\Scripts\python -m pytest -v
 ```
+
+## Try the planner (Phase 2)
+
+The planner asks Claude to split a task into 1 to 6 workers. It needs a real
+key in `.env`.
+
+```powershell
+.venv\Scripts\python -m app.planner "Compare electric cars and petrol cars"
+```
+
+The normal tests use a fake model, so they are free. One extra test calls the
+real Claude and only runs when you ask for it:
+
+```powershell
+.venv\Scripts\python -m pytest -m live -v
+```
