@@ -1,0 +1,11 @@
+# Packages this project needs. Install with:  pip install -r requirements.txt
+langgraph
+langchain
+langchain-anthropic
+pydantic
+python-dotenv
+fastapi
+uvicorn
+streamlit
+ddgs
+pytest

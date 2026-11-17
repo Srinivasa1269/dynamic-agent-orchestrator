@@ -1,0 +1,10 @@
+# Secrets - never commit these
+.env
+
+# Virtual environment (private Python install)
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+.pytest_cache/
