@@ -21,14 +21,23 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 
 # Read the .env file in the project folder and copy its values into
 # environment variables (settings the operating system keeps for a program).
-load_dotenv(PROJECT_ROOT / ".env")
+# override=True means the .env file wins over a value already set in Windows,
+# so an old key left in your system settings cannot silently be used instead.
+# (If there is no .env file, e.g. on a server, the system values are used.)
+load_dotenv(PROJECT_ROOT / ".env", override=True)
+
+# The placeholder text in .env.example. It does not count as a real key.
+_PLACEHOLDER_KEY = "your-key-here"
+DEFAULT_MODEL_NAME = "claude-sonnet-5-5"
 
 # --- Secrets (read from .env, never written in code) -----------------------
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+# .strip() removes accidental spaces or line breaks around the key.
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
 # --- Model ------------------------------------------------------------------
 # Which Claude model to use. You can override it in .env with MODEL_NAME=...
-MODEL_NAME: str = os.getenv("MODEL_NAME", "claude-sonnet-5-5")
+# "or" makes a blank MODEL_NAME= line fall back to the default too.
+MODEL_NAME: str = os.getenv("MODEL_NAME", "").strip() or DEFAULT_MODEL_NAME
 
 # --- Agent limits -----------------------------------------------------------
 MIN_AGENTS: int = 1  # the planner must always create at least 1 worker
@@ -44,5 +53,12 @@ def has_api_key() -> bool:
 
     The placeholder text from .env.example does not count as a real key.
     """
-    key = ANTHROPIC_API_KEY.strip()
-    return bool(key) and key != "your-key-here"
+    return bool(ANTHROPIC_API_KEY) and ANTHROPIC_API_KEY != _PLACEHOLDER_KEY
+
+
+def api_key_looks_valid() -> bool:
+    """Return True if the key starts like an Anthropic key ("sk-ant-").
+
+    Returns only True/False so the key itself never appears in test output.
+    """
+    return ANTHROPIC_API_KEY.startswith("sk-ant-")
