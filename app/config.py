@@ -2,9 +2,10 @@
 config.py - All project settings live here, in one place.
 
 What this file does, in simple words:
-- It reads your private settings (like the API key) from the .env file.
-  A ".env file" is a small text file holding secrets. It is never shared
-  or committed to git.
+- It reads your settings from the .env file. A ".env file" is a small text
+  file with local settings. It is never committed to git.
+- The AI model runs on your own computer with Ollama. No cloud API key is
+  needed.
 - It defines the limits for how many agents the system may create.
 
 Every other file imports its settings from here, so to change a limit
@@ -12,6 +13,7 @@ you only need to edit this one file.
 """
 
 import os
+import urllib.request
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,52 +22,66 @@ from dotenv import load_dotenv
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 
 # Read the .env file in the project folder and copy its values into
-# environment variables (settings the operating system keeps for a program).
-# override=True means the .env file wins over a value already set in Windows,
-# so an old key left in your system settings cannot silently be used instead.
-# (If there is no .env file, e.g. on a server, the system values are used.)
+# environment variables. override=True means the .env file wins over an old
+# value left in your Windows settings.
 load_dotenv(PROJECT_ROOT / ".env", override=True)
 
-# The placeholder text in .env.example. It does not count as a real key.
-_PLACEHOLDER_KEY = "your-key-here"
-DEFAULT_MODEL_NAME = "claude-sonnet-5-5"
 
-# --- Secrets (read from .env, never written in code) -----------------------
-# .strip() removes accidental spaces or line breaks around the key.
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
+def _text_setting(name: str, default: str) -> str:
+    """Read a text setting from .env. A blank value falls back to the default."""
+    return os.getenv(name, "").strip() or default
 
-# --- Model ------------------------------------------------------------------
-# Which Claude model to use. You can override it in .env with MODEL_NAME=...
-# "or" makes a blank MODEL_NAME= line fall back to the default too.
-MODEL_NAME: str = os.getenv("MODEL_NAME", "").strip() or DEFAULT_MODEL_NAME
+
+def _number_setting(name: str, default: int) -> int:
+    """Read a whole-number setting from .env. A blank or bad value uses the default."""
+    try:
+        return int(os.getenv(name, "").strip())
+    except ValueError:
+        return default
+
+
+# --- Model (Ollama, running locally) ---------------------------------------
+# Which Ollama model to use. It must support tool calling. See the list of
+# your models with:  ollama list
+DEFAULT_OLLAMA_MODEL = "llama3.1:latest"
+OLLAMA_MODEL: str = _text_setting("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+# Where the Ollama server is listening. This is Ollama's normal address.
+OLLAMA_BASE_URL: str = _text_setting("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+# How much text (in "tokens", roughly word pieces) the model can see at once.
+# Workers read search results, so they need more than Ollama's small default.
+OLLAMA_NUM_CTX: int = _number_setting("OLLAMA_NUM_CTX", 8192)
 
 # --- Agent limits -----------------------------------------------------------
 MIN_AGENTS: int = 1  # the planner must always create at least 1 worker
 MAX_AGENTS: int = 6  # the planner may never create more than 6 workers
 
 # --- Planner ----------------------------------------------------------------
-# The most text (measured in "tokens", roughly word pieces) the planner may
-# write, including its private thinking. A plan is short, so this is plenty.
-PLANNER_MAX_TOKENS: int = 8000
+# The most tokens the planner may write. A plan is short, so this is plenty.
+PLANNER_MAX_TOKENS: int = 1024
 # If the planner takes longer than this, we stop waiting and report an error.
-PLANNER_TIMEOUT_SECONDS: int = 120
+# A local model on a laptop CPU is slow, so this is generous.
+PLANNER_TIMEOUT_SECONDS: int = _number_setting("PLANNER_TIMEOUT_SECONDS", 300)
+# How many times we ask again if the planner's answer is not a valid plan.
+PLANNER_MAX_ATTEMPTS: int = 3
+
+# --- Workers ----------------------------------------------------------------
+# The most tokens one worker may write in a single reply.
+WORKER_MAX_TOKENS: int = 2048
+# The most think/tool steps one worker may take before it is stopped.
+WORKER_MAX_STEPS: int = 25
+# How many results one web search returns.
+SEARCH_MAX_RESULTS: int = 5
 
 # --- Safety -----------------------------------------------------------------
 # If one worker takes longer than this, we stop waiting and record an error.
-WORKER_TIMEOUT_SECONDS: int = 60
+# All workers share one local model, so they often wait in a queue.
+WORKER_TIMEOUT_SECONDS: int = _number_setting("WORKER_TIMEOUT_SECONDS", 600)
 
 
-def has_api_key() -> bool:
-    """Return True if a real API key was found. Never returns the key itself.
-
-    The placeholder text from .env.example does not count as a real key.
-    """
-    return bool(ANTHROPIC_API_KEY) and ANTHROPIC_API_KEY != _PLACEHOLDER_KEY
-
-
-def api_key_looks_valid() -> bool:
-    """Return True if the key starts like an Anthropic key ("sk-ant-").
-
-    Returns only True/False so the key itself never appears in test output.
-    """
-    return ANTHROPIC_API_KEY.startswith("sk-ant-")
+def ollama_is_running(timeout_seconds: float = 2.0) -> bool:
+    """Return True if the Ollama server answers at OLLAMA_BASE_URL."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/version", timeout=timeout_seconds):
+            return True
+    except OSError:  # not running, wrong address, refused...
+        return False

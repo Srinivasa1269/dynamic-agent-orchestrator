@@ -3,29 +3,82 @@
 A planner agent decides how many worker agents a task needs, creates them at
 runtime, runs them in parallel, then a reviewer and a writer produce one report.
 
+Everything runs **on your own computer** with [Ollama](https://ollama.com).
+No cloud API key is needed. (Web search still uses the internet.)
+
 Full documentation comes in Phase 7.
 
-## Quick setup (Windows)
+## 1. Install Ollama and a model
+
+Install Ollama, then get a model that supports **tool calling**:
+
+```powershell
+ollama pull llama3.1      # about 4.9 GB; skip if "ollama list" already shows it
+ollama list               # check it is there
+```
+
+Ollama usually starts by itself. If it is not running, start it with
+`ollama serve`.
+
+## 2. Set up the project (Windows)
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
-copy .env.example .env   # then paste your Anthropic key into .env
+copy .env.example .env    # optional: change the model or timeouts here
 .venv\Scripts\python -m pytest -v
 ```
 
-## Try the planner (Phase 2)
+Settings in `.env` (all optional):
 
-The planner asks Claude to split a task into 1 to 6 workers. It needs a real
-key in `.env`.
+| Setting | Default | What it does |
+|---|---|---|
+| `OLLAMA_MODEL` | `llama3.1:latest` | The Ollama model to use (must support tools) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Where Ollama is listening |
+| `OLLAMA_NUM_CTX` | `8192` | How much text the model can read at once |
+| `PLANNER_TIMEOUT_SECONDS` | `300` | How long the planner may take |
+| `WORKER_TIMEOUT_SECONDS` | `600` | How long one worker may take |
+
+## 3. Run the web server
 
 ```powershell
-.venv\Scripts\python -m app.planner "Compare electric cars and petrol cars"
+.venv\Scripts\python -m uvicorn api.main:app --reload
 ```
 
-The normal tests use a fake model, so they are free. One extra test calls the
-real Claude and only runs when you ask for it:
+Then open http://127.0.0.1:8000/docs to try it in the browser, or:
+
+```powershell
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/run -H "Content-Type: application/json" -d "{\"task\": \"Write a short plan to learn Docker in 7 days\"}"
+```
+
+`/run` returns the plan and every worker's result. On a laptop CPU, one run
+takes a few minutes.
+
+## Try the parts from the terminal
+
+```powershell
+# Only the planner: splits a task into 1 to 6 workers
+.venv\Scripts\python -m app.planner "Compare electric cars and petrol cars"
+
+# Planner + workers, all at the same time (each can search the web and use a calculator)
+.venv\Scripts\python -m app.graph "Compare electric cars and petrol cars"
+```
+
+## Tests
+
+The normal tests use fake models. They need no Ollama, no internet and no key.
+A few extra "live" tests use the real local model or the real web search, and
+only run when you ask for them (Ollama must be running):
 
 ```powershell
 .venv\Scripts\python -m pytest -m live -v
 ```
+
+## Limits of a local model
+
+- **Slower:** on a laptop CPU, a plan takes around 30–60 s and one worker 1–3
+  minutes. Workers share one model, so they often wait in a queue.
+- **Weaker:** an 8B model writes simpler answers than large cloud models,
+  sometimes forgets to cite URLs, and may pick more workers than needed. Our
+  code checks every plan, retries bad ones, and enforces the 1–6 worker limit.

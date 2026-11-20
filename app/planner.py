@@ -3,14 +3,18 @@ planner.py - Decides how many worker agents a task needs and their roles. (Phase
 
 What this file does, in simple words:
 - You give it a task, for example "Compare electric cars and petrol cars".
-- It asks Claude to split that task into a small team of workers.
+- It asks the local AI model (through Ollama) to split that task into a small
+  team of workers.
 - It returns a "Plan": a list of workers, each with a role and its own sub-task.
 
 The planner only PLANS. It does not create or run the workers - that is the
 job of spawner.py and graph.py (Phase 3).
 
-Safety: Claude's answer is never trusted blindly. After Claude replies, our
-own code enforces the limits from config.py (MIN_AGENTS to MAX_AGENTS).
+Safety: the model's answer is never trusted blindly.
+- Every answer is checked against the Plan shape. If it does not fit, we tell
+  the model what was wrong and ask again (up to PLANNER_MAX_ATTEMPTS times).
+- After that, our own code enforces the limits from config.py
+  (MIN_AGENTS to MAX_AGENTS).
 
 Try it from the terminal:
     .venv\\Scripts\\python -m app.planner "Compare electric cars and petrol cars"
@@ -20,14 +24,15 @@ import re
 import sys
 from typing import Any
 
-from pydantic import BaseModel, Field
+from langchain_core.exceptions import OutputParserException
+from pydantic import BaseModel, Field, ValidationError
 
 from app import config
 
 
 # --- The shape of a plan ----------------------------------------------------
-# These classes describe exactly what we want back from Claude. Claude is
-# forced to answer in this shape ("structured output"), so we get real Python
+# These classes describe exactly what we want back from the model. Ollama is
+# told to answer in this shape ("structured output"), so we get real Python
 # objects instead of free text we would have to pick apart.
 
 
@@ -63,7 +68,9 @@ class PlannerError(Exception):
     """Raised when the planner cannot produce a plan."""
 
 
-# --- The instructions we give Claude ----------------------------------------
+# --- The instructions we give the model -------------------------------------
+# Small local models follow rules better with a short, concrete example of
+# the exact answer format, so the prompt ends with one.
 PLANNER_SYSTEM_PROMPT = f"""\
 You are the planner in a multi-agent system. A user gives you a task. You split \
 it into a team of worker agents, and after you answer, the system creates one \
@@ -73,8 +80,9 @@ final report for the user.
 
 How to decide the team:
 - Use between {config.MIN_AGENTS} and {config.MAX_AGENTS} workers. Every worker \
-costs time and money, so use as few as the task really needs. A simple question \
-needs 1 worker. Add a worker only when it covers a clearly separate part of the task.
+costs time, so use as few as the task really needs. A simple question needs 1 \
+worker. Most tasks need 1 to 3. Add a worker only when it covers a clearly \
+separate part of the task.
 - Workers run in parallel and cannot see each other's work. Give each one a \
 sub-task that can be finished alone, with no overlap between workers and no \
 worker waiting on another worker's result.
@@ -84,33 +92,61 @@ its output should contain.
 - Workers can search the web and use a calculator. They cannot do anything else.
 - Do not create a worker to review, combine, or summarise the others. The \
 reviewer and the writer already do that.
+
+Answer format:
+- Reply with ONE JSON object and nothing else. No text before or after it.
+- "reasoning": one or two sentences.
+- "workers": a list. Each worker has "role" (a short snake_case job name, \
+different for every worker) and "task" (a full sub-task description).
+
+Example answer (for a different task):
+{{"reasoning": "The task has two separate parts, so two workers fit.", \
+"workers": [{{"role": "price_researcher", "task": "Find the current average \
+price of a new electric car and a new petrol car in the UK, with sources."}}, \
+{{"role": "emissions_researcher", "task": "Find the lifetime CO2 emissions of \
+an average electric car and an average petrol car, with sources."}}]}}
 """
 
 
-# --- Talking to Claude ------------------------------------------------------
+# --- Talking to the model ---------------------------------------------------
 def build_planner_llm() -> Any:
-    """Create the Claude client that returns a Plan object.
+    """Create the Ollama client that returns a Plan object.
 
-    The import is inside the function so that tests (which use a fake model)
-    never need a real API key or a network connection.
+    Building the client does not contact Ollama, so tests can call this
+    even when Ollama is not running.
     """
-    if not config.has_api_key():
-        raise PlannerError(
-            "ANTHROPIC_API_KEY is missing. Copy .env.example to .env "
-            "and paste your key there."
-        )
+    from langchain_ollama import ChatOllama
 
-    from langchain_anthropic import ChatAnthropic
-
-    llm = ChatAnthropic(
-        model=config.MODEL_NAME,
-        api_key=config.ANTHROPIC_API_KEY,
-        max_tokens=config.PLANNER_MAX_TOKENS,
-        timeout=config.PLANNER_TIMEOUT_SECONDS,
+    llm = ChatOllama(
+        model=config.OLLAMA_MODEL,
+        base_url=config.OLLAMA_BASE_URL,
+        temperature=0,  # the same task gives the same plan; fewer odd answers
+        num_ctx=config.OLLAMA_NUM_CTX,
+        num_predict=config.PLANNER_MAX_TOKENS,
+        client_kwargs={"timeout": config.PLANNER_TIMEOUT_SECONDS},
     )
-    # method="json_schema" uses Claude's built-in structured output feature,
-    # which guarantees the reply matches the Plan shape.
+    # method="json_schema" sends the Plan shape to Ollama, which then only
+    # lets the model write JSON that fits it.
     return llm.with_structured_output(Plan, method="json_schema")
+
+
+def _read_plan(answer: Any) -> Plan:
+    """Check the model's answer is a Plan. Raises ValueError if it is not."""
+    if isinstance(answer, Plan):
+        return answer
+    if isinstance(answer, dict):
+        return Plan.model_validate(answer)  # raises ValidationError (a ValueError)
+    raise ValueError(f"expected a JSON plan, got {type(answer).__name__}")
+
+
+def _connection_hint(error: Exception) -> str:
+    """Extra help when the problem is that Ollama cannot be reached."""
+    if isinstance(error, ConnectionError) or "connect" in str(error).lower():
+        return (
+            f" Is Ollama running at {config.OLLAMA_BASE_URL}? "
+            "Start it with:  ollama serve"
+        )
+    return ""
 
 
 # --- Enforcing the limits ourselves -----------------------------------------
@@ -121,7 +157,7 @@ def _clean_role(role: str) -> str:
 
 
 def _enforce_limits(plan: Plan, task: str) -> Plan:
-    """Make the plan obey our rules, whatever Claude answered.
+    """Make the plan obey our rules, whatever the model answered.
 
     - Workers with an empty sub-task are dropped.
     - Role names are tidied and made unique (later phases use them as labels).
@@ -153,13 +189,14 @@ def _enforce_limits(plan: Plan, task: str) -> Plan:
 
 # --- The one function other files call --------------------------------------
 def make_plan(task: str, llm: Any = None) -> Plan:
-    """Ask Claude to plan a team of workers for this task.
+    """Ask the model to plan a team of workers for this task.
 
     task: what the user wants done.
     llm:  leave empty in normal use. Tests pass a fake model here.
 
     Returns a Plan with between MIN_AGENTS and MAX_AGENTS workers.
-    Raises PlannerError if the task is empty or Claude cannot be reached.
+    Raises PlannerError if the task is empty, the model cannot be reached,
+    or it gives no valid plan after PLANNER_MAX_ATTEMPTS tries.
     """
     task = task.strip()
     if not task:
@@ -168,24 +205,42 @@ def make_plan(task: str, llm: Any = None) -> Plan:
     if llm is None:
         llm = build_planner_llm()
 
-    try:
-        raw_plan = llm.invoke(
-            [
-                ("system", PLANNER_SYSTEM_PROMPT),
-                ("human", f"Task from the user:\n\n{task}"),
+    messages: list[tuple[str, str]] = [
+        ("system", PLANNER_SYSTEM_PROMPT),
+        ("human", f"Task from the user:\n\n{task}"),
+    ]
+    last_problem = ""
+
+    for _attempt in range(config.PLANNER_MAX_ATTEMPTS):
+        try:
+            return _enforce_limits(_read_plan(llm.invoke(messages)), task)
+        except (OutputParserException, ValidationError, ValueError) as error:
+            # A bad answer (not valid JSON, missing fields...). Say what was
+            # wrong and ask again.
+            last_problem = str(error)[:500]
+            messages = messages[:2] + [
+                (
+                    "human",
+                    f"Your last answer was not a valid plan: {last_problem}\n"
+                    "Reply again with ONLY the JSON object, in the format shown.",
+                )
             ]
-        )
-    except Exception as error:  # network problem, bad key, refusal, bad reply...
-        raise PlannerError(f"The planner could not create a plan: {error}") from error
+        except Exception as error:  # Ollama not running, timeout, ...
+            raise PlannerError(
+                f"The planner could not create a plan: {error}.{_connection_hint(error)}"
+            ) from error
 
-    if not isinstance(raw_plan, Plan):
-        raise PlannerError("The planner returned an answer that is not a Plan.")
-
-    return _enforce_limits(raw_plan, task)
+    raise PlannerError(
+        f"The planner gave no valid plan after {config.PLANNER_MAX_ATTEMPTS} tries. "
+        f"Last problem: {last_problem}"
+    )
 
 
 # --- Small command-line demo ------------------------------------------------
 if __name__ == "__main__":
+    # Some Windows terminals cannot show every character (for example emoji).
+    # This prints a "?" for those instead of crashing.
+    sys.stdout.reconfigure(errors="replace")
     user_task = " ".join(sys.argv[1:])
     try:
         result = make_plan(user_task)
