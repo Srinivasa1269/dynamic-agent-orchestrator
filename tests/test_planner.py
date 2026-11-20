@@ -123,7 +123,7 @@ def test_bad_json_is_retried_and_then_succeeds() -> None:
     assert len(plan.workers) == 2
     assert fake.calls == 2
     # The retry tells the model what was wrong.
-    assert "not a valid plan" in fake.received[-1][1]
+    assert "not valid" in fake.received[-1][1]
 
 
 def test_dict_with_missing_fields_is_retried() -> None:
@@ -134,7 +134,7 @@ def test_dict_with_missing_fields_is_retried() -> None:
 
 def test_gives_up_after_the_maximum_number_of_tries() -> None:
     fake = FakeLLM({"not": "a plan"})
-    with pytest.raises(PlannerError, match="no valid plan"):
+    with pytest.raises(PlannerError, match="no valid answer"):
         make_plan("Task", llm=fake)
     assert fake.calls == config.PLANNER_MAX_ATTEMPTS
 

@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 import api.main as server
 from app.planner import Plan, PlannerError, WorkerSpec
+from app.reviewer import WorkerReview
 from app.workers import WorkerResult
+from app.writer import Report
 
 client = TestClient(server.app)
 
@@ -23,6 +25,11 @@ def _fake_run_task(task: str) -> dict:
             WorkerResult(role="researcher", task="Find facts.", output="Facts.", seconds=1.5),
             WorkerResult(role="broken", task="Fail.", error="boom"),
         ],
+        "reviews": [
+            WorkerReview(role="researcher", score=4, feedback="Good."),
+            WorkerReview(role="broken", feedback="Not reviewed"),
+        ],
+        "report": Report(text="# Final report"),
     }
 
 
@@ -36,12 +43,14 @@ def test_health_reports_ok_and_the_model(monkeypatch) -> None:
     assert body["model"] == server.config.OLLAMA_MODEL
 
 
-def test_run_returns_plan_and_results_as_json(monkeypatch) -> None:
+def test_run_returns_report_plan_results_and_reviews_as_json(monkeypatch) -> None:
     monkeypatch.setattr(server, "run_task", _fake_run_task)
     answer = client.post("/run", json={"task": "Learn Docker"})
     assert answer.status_code == 200
     body = answer.json()
     assert body["task"] == "Learn Docker"
+    assert body["report"] == {"text": "# Final report", "fallback": False, "error": ""}
+    assert [r["score"] for r in body["reviews"]] == [4, None]
     assert body["plan"]["workers"][0]["role"] == "researcher"
     assert body["results"][0]["output"] == "Facts."
     assert body["results"][0]["succeeded"] is True

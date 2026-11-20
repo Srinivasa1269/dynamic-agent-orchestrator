@@ -12,9 +12,9 @@ import time
 import pytest
 from langchain_core.messages import AIMessage
 
-from app import config
-from app.graph import run_task
+from app import config, graph
 from app.planner import Plan, PlannerError, WorkerSpec
+from app.reviewer import Review
 from app.spawner import SpawnerError, build_worker_llm, build_worker_prompt, spawn_worker
 from app.workers import run_worker
 
@@ -46,7 +46,28 @@ class FakePlannerLLM:
         return self.plan
 
 
-SPEC = WorkerSpec(role="researcher", task="Find the height of Mount Everest.")
+class FakeReviewerLLM:
+    """Pretends to be the reviewer's model: every output gets a 4."""
+
+    def invoke(self, messages):
+        return Review(feedback="Fine.", score=4)
+
+
+class FakeWriterLLM:
+    """Pretends to be the writer's model: returns a fixed report."""
+
+    def invoke(self, messages):
+        return AIMessage(content="Final report.")
+
+
+def run_task(task: str, **fakes):
+    """The real run_task, but with fake reviewer and writer models (no Ollama)."""
+    fakes.setdefault("reviewer_llm", FakeReviewerLLM())
+    fakes.setdefault("writer_llm", FakeWriterLLM())
+    return graph.run_task(task, **fakes)
+
+
+SPEC =WorkerSpec(role="researcher", task="Find the height of Mount Everest.")
 
 
 def _plan(*roles: str) -> Plan:
@@ -188,10 +209,34 @@ def test_graph_passes_planner_errors_up() -> None:
         run_task("   ", planner_llm=FakePlannerLLM(_plan("a")))
 
 
+def test_graph_reviews_every_worker_and_writes_a_report() -> None:
+    def factory(spec: WorkerSpec):
+        # "slow" finishes last, to check reviews still come back in plan order.
+        if spec.role == "slow":
+            return FakeAgent(answer="late", delay=0.3)
+        if spec.role == "bad":
+            return FakeAgent(error=RuntimeError("boom"))
+        return FakeAgent(answer="fine")
+
+    state = run_task(
+        "Some task",
+        planner_llm=FakePlannerLLM(_plan("slow", "bad", "fast")),
+        agent_factory=factory,
+    )
+    assert [r.role for r in state["reviews"]] == ["slow", "bad", "fast"]
+    assert [r.score for r in state["reviews"]] == [4, None, 4]  # failed = not scored
+    assert state["report"].text == "Final report."
+    assert not state["report"].fallback
+
+
 # --- live -------------------------------------------------------------------
 @pytest.mark.live
 @pytest.mark.skipif(not config.ollama_is_running(), reason="Ollama is not running.")
 def test_live_full_run() -> None:
-    state = run_task("What is 17% of 2,340, and what is the capital of Australia?")
-    assert state["results"]
+    # graph.run_task (not the wrapper above) so the real reviewer and writer run.
+    state = graph.run_task("What is 17% of 2,340, and what is the capital of Australia?")
     assert any(r.succeeded for r in state["results"])
+    assert len(state["reviews"]) == len(state["results"])
+    assert any(review.reviewed for review in state["reviews"])
+    assert state["report"].text.strip()
+    assert not state["report"].fallback

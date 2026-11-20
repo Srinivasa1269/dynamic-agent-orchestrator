@@ -4,8 +4,7 @@ spawner.py - Creates one worker agent per role in the plan. (Phase 3)
 What this file does, in simple words:
 - The planner hands us a list of workers (a role and a sub-task each).
 - For every worker we build an "agent": the local Ollama model plus the
-  tools from tools.py
-  plus instructions written for that worker's role.
+  tools from tools.py plus instructions written for that worker's role.
 - An agent can think, call a tool, read the result, and repeat until its
   sub-task is done.
 
@@ -15,6 +14,7 @@ This file only CREATES agents. Running one is the job of workers.py.
 from typing import Any
 
 from app import config
+from app.llm import build_chat_model
 from app.planner import Plan, WorkerSpec
 from app.tools import WORKER_TOOLS
 
@@ -53,15 +53,10 @@ def build_worker_llm() -> Any:
     Building the client does not contact Ollama, so tests can call this
     even when Ollama is not running.
     """
-    from langchain_ollama import ChatOllama
-
-    return ChatOllama(
-        model=config.OLLAMA_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
+    return build_chat_model(
         temperature=0.2,  # low = sticks to facts and calls tools more reliably
-        num_ctx=config.OLLAMA_NUM_CTX,  # room for the search results it reads
-        num_predict=config.WORKER_MAX_TOKENS,
-        client_kwargs={"timeout": config.WORKER_TIMEOUT_SECONDS},
+        max_tokens=config.WORKER_MAX_TOKENS,
+        timeout_seconds=config.WORKER_TIMEOUT_SECONDS,
     )
 
 

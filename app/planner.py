@@ -24,10 +24,10 @@ import re
 import sys
 from typing import Any
 
-from langchain_core.exceptions import OutputParserException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from app import config
+from app.llm import InvalidAnswerError, ask_for_structured, build_chat_model, connection_hint
 
 
 # --- The shape of a plan ----------------------------------------------------
@@ -115,38 +115,14 @@ def build_planner_llm() -> Any:
     Building the client does not contact Ollama, so tests can call this
     even when Ollama is not running.
     """
-    from langchain_ollama import ChatOllama
-
-    llm = ChatOllama(
-        model=config.OLLAMA_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
+    llm = build_chat_model(
         temperature=0,  # the same task gives the same plan; fewer odd answers
-        num_ctx=config.OLLAMA_NUM_CTX,
-        num_predict=config.PLANNER_MAX_TOKENS,
-        client_kwargs={"timeout": config.PLANNER_TIMEOUT_SECONDS},
+        max_tokens=config.PLANNER_MAX_TOKENS,
+        timeout_seconds=config.PLANNER_TIMEOUT_SECONDS,
     )
     # method="json_schema" sends the Plan shape to Ollama, which then only
     # lets the model write JSON that fits it.
     return llm.with_structured_output(Plan, method="json_schema")
-
-
-def _read_plan(answer: Any) -> Plan:
-    """Check the model's answer is a Plan. Raises ValueError if it is not."""
-    if isinstance(answer, Plan):
-        return answer
-    if isinstance(answer, dict):
-        return Plan.model_validate(answer)  # raises ValidationError (a ValueError)
-    raise ValueError(f"expected a JSON plan, got {type(answer).__name__}")
-
-
-def _connection_hint(error: Exception) -> str:
-    """Extra help when the problem is that Ollama cannot be reached."""
-    if isinstance(error, ConnectionError) or "connect" in str(error).lower():
-        return (
-            f" Is Ollama running at {config.OLLAMA_BASE_URL}? "
-            "Start it with:  ollama serve"
-        )
-    return ""
 
 
 # --- Enforcing the limits ourselves -----------------------------------------
@@ -205,35 +181,20 @@ def make_plan(task: str, llm: Any = None) -> Plan:
     if llm is None:
         llm = build_planner_llm()
 
-    messages: list[tuple[str, str]] = [
+    messages = [
         ("system", PLANNER_SYSTEM_PROMPT),
         ("human", f"Task from the user:\n\n{task}"),
     ]
-    last_problem = ""
+    try:
+        plan = ask_for_structured(llm, messages, Plan, config.PLANNER_MAX_ATTEMPTS)
+    except InvalidAnswerError as error:  # bad JSON on every try
+        raise PlannerError(f"The planner gave {error}") from error
+    except Exception as error:  # Ollama not running, timeout, ...
+        raise PlannerError(
+            f"The planner could not create a plan: {error}.{connection_hint(error)}"
+        ) from error
 
-    for _attempt in range(config.PLANNER_MAX_ATTEMPTS):
-        try:
-            return _enforce_limits(_read_plan(llm.invoke(messages)), task)
-        except (OutputParserException, ValidationError, ValueError) as error:
-            # A bad answer (not valid JSON, missing fields...). Say what was
-            # wrong and ask again.
-            last_problem = str(error)[:500]
-            messages = messages[:2] + [
-                (
-                    "human",
-                    f"Your last answer was not a valid plan: {last_problem}\n"
-                    "Reply again with ONLY the JSON object, in the format shown.",
-                )
-            ]
-        except Exception as error:  # Ollama not running, timeout, ...
-            raise PlannerError(
-                f"The planner could not create a plan: {error}.{_connection_hint(error)}"
-            ) from error
-
-    raise PlannerError(
-        f"The planner gave no valid plan after {config.PLANNER_MAX_ATTEMPTS} tries. "
-        f"Last problem: {last_problem}"
-    )
+    return _enforce_limits(plan, task)
 
 
 # --- Small command-line demo ------------------------------------------------

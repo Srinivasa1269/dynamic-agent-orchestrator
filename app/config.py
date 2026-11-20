@@ -72,6 +72,27 @@ WORKER_MAX_STEPS: int = 25
 # How many results one web search returns.
 SEARCH_MAX_RESULTS: int = 5
 
+# --- Reviewer ---------------------------------------------------------------
+# The reviewer gives each worker's output a score from 1 (bad) to 5 (great).
+REVIEW_MIN_SCORE: int = 1
+REVIEW_MAX_SCORE: int = 5
+# A review is short, so few tokens are needed.
+REVIEWER_MAX_TOKENS: int = 512
+# How many times we ask again if a review is not valid JSON.
+REVIEWER_MAX_ATTEMPTS: int = 2
+# How long one review may take.
+REVIEWER_TIMEOUT_SECONDS: int = _number_setting("REVIEWER_TIMEOUT_SECONDS", 300)
+
+# --- Writer -----------------------------------------------------------------
+# The most tokens the final report may have.
+WRITER_MAX_TOKENS: int = 3000
+# How long writing the report may take.
+WRITER_TIMEOUT_SECONDS: int = _number_setting("WRITER_TIMEOUT_SECONDS", 600)
+# The most characters of worker output the writer reads in total. The model
+# can only read OLLAMA_NUM_CTX tokens at once (about 4 characters per token),
+# and it also needs room for its instructions and for the report it writes.
+WRITER_MAX_INPUT_CHARS: int = 16000
+
 # --- Safety -----------------------------------------------------------------
 # If one worker takes longer than this, we stop waiting and record an error.
 # All workers share one local model, so they often wait in a queue.

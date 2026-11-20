@@ -38,6 +38,20 @@ Settings in `.env` (all optional):
 | `OLLAMA_NUM_CTX` | `8192` | How much text the model can read at once |
 | `PLANNER_TIMEOUT_SECONDS` | `300` | How long the planner may take |
 | `WORKER_TIMEOUT_SECONDS` | `600` | How long one worker may take |
+| `REVIEWER_TIMEOUT_SECONDS` | `300` | How long one review may take |
+| `WRITER_TIMEOUT_SECONDS` | `600` | How long writing the report may take |
+
+## How a task flows
+
+```
+/run -> planner -> worker, worker, ... (all at once) -> reviewer -> writer -> report
+```
+
+1. **Planner** splits the task into 1 to 6 workers.
+2. **Workers** each do one part. They can search the web and use a calculator.
+3. **Reviewer** scores each worker's output from 1 to 5, with a short reason.
+4. **Writer** merges everything into one report, trusting higher scores more.
+   If the writer fails, you get the workers' own outputs instead.
 
 ## 3. Run the web server
 
@@ -52,8 +66,10 @@ curl http://127.0.0.1:8000/health
 curl -X POST http://127.0.0.1:8000/run -H "Content-Type: application/json" -d "{\"task\": \"Write a short plan to learn Docker in 7 days\"}"
 ```
 
-`/run` returns the plan and every worker's result. On a laptop CPU, one run
-takes a few minutes.
+`/run` returns `report` (the final answer: read `report.text`), plus the
+`plan`, every worker's `results`, and the `reviews`. If `report.fallback` is
+`true`, the writer failed and the text is the workers' raw outputs.
+On a laptop CPU, one run takes about 3 to 6 minutes.
 
 ## Try the parts from the terminal
 
@@ -61,7 +77,7 @@ takes a few minutes.
 # Only the planner: splits a task into 1 to 6 workers
 .venv\Scripts\python -m app.planner "Compare electric cars and petrol cars"
 
-# Planner + workers, all at the same time (each can search the web and use a calculator)
+# The whole flow: planner, workers, reviewer, writer. Prints the scores and the report.
 .venv\Scripts\python -m app.graph "Compare electric cars and petrol cars"
 ```
 
@@ -77,8 +93,12 @@ only run when you ask for them (Ollama must be running):
 
 ## Limits of a local model
 
-- **Slower:** on a laptop CPU, a plan takes around 30–60 s and one worker 1–3
-  minutes. Workers share one model, so they often wait in a queue.
+- **Slower:** on a laptop CPU, a plan takes around 30–60 s, one worker 1–3
+  minutes, each review about 15–30 s, and the report 1–2 minutes. Workers
+  share one model, so they often wait in a queue.
 - **Weaker:** an 8B model writes simpler answers than large cloud models,
   sometimes forgets to cite URLs, and may pick more workers than needed. Our
   code checks every plan, retries bad ones, and enforces the 1–6 worker limit.
+- **Sources can be made up:** a worker may write a URL from memory instead
+  of from a search result. The writer keeps only URLs the workers gave, but
+  it cannot check them. Open a link before you trust it.

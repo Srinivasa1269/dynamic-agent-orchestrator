@@ -35,7 +35,7 @@ def health() -> dict:
 # so a long run does not block /health or other requests.
 @app.post("/run")
 def run(request: RunRequest) -> dict:
-    """Plan the task, run the workers, and return the plan and every result."""
+    """Plan the task, run the workers, review them, and return the final report."""
     if not request.task.strip():
         raise HTTPException(status_code=400, detail="The task is empty.")
     try:
@@ -47,9 +47,11 @@ def run(request: RunRequest) -> dict:
 
     return {
         "task": state["task"],
+        "report": state["report"].model_dump(),  # the final answer: read this first
         "plan": state["plan"].model_dump(),
         "results": [
             {**result.model_dump(), "succeeded": result.succeeded}
             for result in state["results"]
         ],
+        "reviews": [review.model_dump() for review in state["reviews"]],
     }
